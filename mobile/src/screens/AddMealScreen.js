@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useContext } from 'react';
-import { View, StyleSheet, Text, FlatList, ActivityIndicator } from 'react-native';
+import { View, StyleSheet, Text, FlatList, ActivityIndicator, Alert } from 'react-native';
 import { Searchbar, List, Button, Dialog, Portal, TextInput } from 'react-native-paper';
 import { ChildContext } from '../context/ChildContext';
 import apiClient from '../api/client';
@@ -52,7 +52,18 @@ export default function AddMealScreen({ route, navigation }) {
   };
 
   const handleAddToMeal = async () => {
-    if (!selectedFood || !quantity) return;
+    if (!selectedFood) return;
+    
+    const parsedQty = parseFloat(quantity);
+    if (isNaN(parsedQty) || parsedQty <= 0) {
+      Alert.alert('Invalid Quantity', 'Please enter a valid serving quantity greater than 0.');
+      return;
+    }
+
+    if (!activeChild?.child_id) {
+      Alert.alert('Error', 'No active child selected.');
+      return;
+    }
     
     setSaving(true);
     try {
@@ -68,13 +79,14 @@ export default function AddMealScreen({ route, navigation }) {
       // 2. Add the item to the meal
       await apiClient.post(`/meals/${mealId}/items`, {
         food_id: selectedFood.food_id,
-        quantity: parseFloat(quantity)
+        quantity: parsedQty
       });
       
       setDialogVisible(false);
       navigation.goBack(); // Go back to nutrition screen
     } catch (e) {
       console.log('Error saving meal item', e);
+      Alert.alert('Error', e.response?.data?.detail || 'Failed to save food item. Please try again.');
     } finally {
       setSaving(false);
     }

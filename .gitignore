@@ -159,3 +159,4 @@ venv/
 *.db
 *.sqlite3
 *.tar.gz
+.DS_Store

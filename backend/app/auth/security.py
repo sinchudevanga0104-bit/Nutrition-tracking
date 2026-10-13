@@ -1,8 +1,11 @@
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+from dotenv import load_dotenv
 from jose import JWTError, jwt
 from passlib.context import CryptContext
+
+load_dotenv()
 
 # Use pbkdf2_sha256 since bcrypt requires C extensions which may not be available
 pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")

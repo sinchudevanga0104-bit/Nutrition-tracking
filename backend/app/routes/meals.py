@@ -136,11 +136,11 @@ def add_meal_item(
     db.add(meal_item)
     
     # 4. Update Meal Totals
-    added_calories = food.calories * Decimal(item.quantity)
-    added_protein = food.protein * Decimal(item.quantity)
+    added_calories = food.calories * Decimal(str(item.quantity))
+    added_protein = food.protein * Decimal(str(item.quantity))
     
-    meal.total_calories += added_calories
-    meal.total_protein += added_protein
+    meal.total_calories = (meal.total_calories or Decimal('0.0')) + added_calories
+    meal.total_protein = (meal.total_protein or Decimal('0.0')) + added_protein
     
     db.commit()
     db.refresh(meal)
@@ -164,11 +164,11 @@ def delete_meal_item(
     food = meal_item.food
     
     # Update Totals
-    removed_calories = food.calories * meal_item.quantity
-    removed_protein = food.protein * meal_item.quantity
+    removed_calories = food.calories * Decimal(str(meal_item.quantity))
+    removed_protein = food.protein * Decimal(str(meal_item.quantity))
     
-    meal.total_calories -= removed_calories
-    meal.total_protein -= removed_protein
+    meal.total_calories = max(Decimal('0.0'), (meal.total_calories or Decimal('0.0')) - removed_calories)
+    meal.total_protein = max(Decimal('0.0'), (meal.total_protein or Decimal('0.0')) - removed_protein)
     
     db.delete(meal_item)
     db.commit()

@@ -13,10 +13,17 @@ MYSQL_HOST = os.getenv("MYSQL_HOST", "localhost")
 MYSQL_PORT = os.getenv("MYSQL_PORT", "3306")
 MYSQL_DB = os.getenv("MYSQL_DB", "nutritrack_db")
 
+# Resolve backend directory for robust absolute SQLite database path
+BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+DEFAULT_SQLITE_PATH = os.path.join(BACKEND_DIR, "nutritrack.db")
+SQLITE_URL = f"sqlite:///{DEFAULT_SQLITE_PATH}"
+
 # Default to MySQL, fallback to SQLite if SQLite is preferred or MySQL engine fails
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     DATABASE_URL = f"mysql+pymysql://{MYSQL_USER}:{MYSQL_PASSWORD}@{MYSQL_HOST}:{MYSQL_PORT}/{MYSQL_DB}"
+elif DATABASE_URL.startswith("sqlite:///./") or DATABASE_URL == "sqlite:///nutritrack.db":
+    DATABASE_URL = SQLITE_URL
 
 try:
     engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False} if "sqlite" in DATABASE_URL else {})
@@ -25,7 +32,6 @@ try:
         pass
 except Exception:
     # Fallback to local SQLite file for seamless testing and offline college demos
-    SQLITE_URL = "sqlite:///./nutritrack.db"
     engine = create_engine(SQLITE_URL, connect_args={"check_same_thread": False})
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

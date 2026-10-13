@@ -86,7 +86,7 @@ def process_voice_query(
         elif "dinner" in query_lower:
             meal_type = "Dinner"
         elif "snack" in query_lower or "evening" in query_lower:
-            meal_type = "Snack"
+            meal_type = "Snacks"
             
         all_foods = db.query(Food).all()
         matched_food = None
@@ -99,17 +99,23 @@ def process_voice_query(
             except ValueError:
                 matched_quantity = 1.0
 
+        # Smart food matching: match core name without parenthetical details, e.g. 'idli' in 'Idli (2 pieces)'
         for f in all_foods:
-            if f.food_name.lower() in query_lower:
+            clean_name = re.sub(r'\(.*?\)', '', f.food_name).split('/')[0].strip().lower()
+            if clean_name and (clean_name in query_lower or (len(clean_name.rstrip('s')) > 2 and clean_name.rstrip('s') in query_lower)):
                 matched_food = f
                 break
                 
         if not matched_food:
             for word in query_lower.split():
-                if len(word) > 2 and word not in ["log", "fed", "ate", "had", "the", "for", "and", "with", "cup", "bowl"]:
-                    f_match = db.query(Food).filter(Food.food_name.ilike(f"%{word}%")).first()
-                    if f_match:
-                        matched_food = f_match
+                w = word.strip().rstrip('s')
+                if len(w) > 2 and w not in ["log", "fed", "ate", "had", "the", "for", "and", "with", "cup", "bowl", "glass", "piece"]:
+                    for f in all_foods:
+                        clean_name = re.sub(r'\(.*?\)', '', f.food_name).split('/')[0].strip().lower()
+                        if w == clean_name or w in clean_name or clean_name in w:
+                            matched_food = f
+                            break
+                    if matched_food:
                         break
                         
         if matched_food:

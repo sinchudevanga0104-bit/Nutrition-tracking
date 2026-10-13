@@ -1,25 +1,30 @@
-import React, { useState, useEffect, useContext } from 'react';
-import { View, StyleSheet, Text, ScrollView, TouchableOpacity, ActivityIndicator } from 'react-native';
+import React, { useState, useEffect, useContext, useCallback } from 'react';
+import { View, StyleSheet, Text, ScrollView, TouchableOpacity, ActivityIndicator, RefreshControl, Alert } from 'react-native';
 import { Card, Button, ProgressBar } from 'react-native-paper';
 import { ChildContext } from '../context/ChildContext';
 import apiClient from '../api/client';
 import Icon from '@expo/vector-icons/MaterialCommunityIcons';
 
+// Helper to format date reliably in local timezone (YYYY-MM-DD)
+const getLocalDateString = (d = new Date()) => {
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
 export default function NutritionScreen({ navigation }) {
   const { activeChild, isLoading: childLoading } = useContext(ChildContext);
   
-  const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]); // YYYY-MM-DD
+  const [selectedDate, setSelectedDate] = useState(getLocalDateString());
   const [meals, setMeals] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [deletingItemId, setDeletingItemId] = useState(null);
 
-  useEffect(() => {
-    if (activeChild) {
-      fetchMeals();
-    }
-  }, [activeChild, selectedDate]);
-
-  const fetchMeals = async () => {
-    setLoading(true);
+  const fetchMeals = useCallback(async (showSpinner = true) => {
+    if (!activeChild?.child_id) return;
+    if (showSpinner) setLoading(true);
     try {
       const response = await apiClient.get('/meals/', {
         params: {
@@ -27,11 +32,41 @@ export default function NutritionScreen({ navigation }) {
           meal_date: selectedDate
         }
       });
-      setMeals(response.data);
+      setMeals(Array.isArray(response.data) ? response.data : []);
     } catch (e) {
       console.log('Failed to fetch meals', e);
     } finally {
-      setLoading(false);
+      if (showSpinner) setLoading(false);
+    }
+  }, [activeChild?.child_id, selectedDate]);
+
+  // Re-fetch meals when screen comes into focus (e.g., returning from AddMealScreen or switching tabs)
+  useEffect(() => {
+    const unsubscribe = navigation.addListener('focus', () => {
+      fetchMeals(false);
+    });
+
+    fetchMeals(true);
+
+    return unsubscribe;
+  }, [navigation, fetchMeals]);
+
+  const onRefresh = async () => {
+    setRefreshing(true);
+    await fetchMeals(false);
+    setRefreshing(false);
+  };
+
+  const handleDeleteItem = async (itemId) => {
+    setDeletingItemId(itemId);
+    try {
+      await apiClient.delete(`/meals/items/${itemId}`);
+      await fetchMeals(false);
+    } catch (e) {
+      console.log('Failed to delete item', e);
+      Alert.alert('Error', 'Failed to remove food item. Please try again.');
+    } finally {
+      setDeletingItemId(null);
     }
   };
 
@@ -50,18 +85,33 @@ export default function NutritionScreen({ navigation }) {
   const mealTypes = ['Breakfast', 'Lunch', 'Snacks', 'Dinner'];
 
   const renderMealSection = (type) => {
-    const meal = meals.find(m => m.meal_type === type);
-    
+    // Find all meals matching this meal type case-insensitively
+    const matchingMeals = meals.filter(
+      m => m.meal_type && m.meal_type.toLowerCase() === type.toLowerCase()
+    );
+
+    const allItems = matchingMeals.flatMap(m => m.items || []);
+    const sectionCalories = Math.round(
+      matchingMeals.reduce((sum, m) => sum + parseFloat(m.total_calories || 0), 0)
+    );
+    const sectionProtein = (
+      matchingMeals.reduce((sum, m) => sum + parseFloat(m.total_protein || 0), 0)
+    ).toFixed(1);
+
+    const hasItems = allItems.length > 0;
+
     return (
       <Card style={styles.mealCard} key={type}>
         <Card.Title 
           title={type} 
-          subtitle={meal ? `${meal.total_calories} kcal • ${meal.total_protein}g Protein` : "No items logged"}
+          titleStyle={styles.mealTitle}
+          subtitle={hasItems ? `${sectionCalories} kcal • ${sectionProtein}g Protein` : "No items logged"}
+          subtitleStyle={hasItems ? styles.mealSubtitleActive : styles.mealSubtitleEmpty}
           right={(props) => (
             <View style={{ flexDirection: 'row', alignItems: 'center', marginRight: 8 }}>
               <Button
                 compact
-                icon="barcode-scan"
+                icon="plus-circle-outline"
                 textColor="#2E7D32"
                 onPress={() => navigation.navigate('AddMeal', { mealType: type, mealDate: selectedDate })}
               >
@@ -70,26 +120,44 @@ export default function NutritionScreen({ navigation }) {
             </View>
           )}
         />
-        {meal && meal.items && meal.items.length > 0 && (
-          <Card.Content>
-            {meal.items.map((item, index) => (
-              <View key={index} style={styles.foodRow}>
-                <Text style={styles.foodName}>{item.food.food_name}</Text>
-                <Text style={styles.foodDetails}>
-                  {item.quantity} x {item.food.serving_size} ({item.food.calories * item.quantity} kcal)
-                </Text>
-              </View>
-            ))}
+        {hasItems && (
+          <Card.Content style={styles.itemsContent}>
+            {allItems.map((item, index) => {
+              const itemCalories = item.food ? Math.round(parseFloat(item.food.calories) * parseFloat(item.quantity)) : 0;
+              const isDeleting = deletingItemId === item.item_id;
+
+              return (
+                <View key={item.item_id || index} style={styles.foodRow}>
+                  <View style={{ flex: 1, paddingRight: 8 }}>
+                    <Text style={styles.foodName}>{item.food?.food_name || 'Food item'}</Text>
+                    <Text style={styles.foodDetails}>
+                      {item.quantity} x {item.food?.serving_size || 'serving'} ({item.food ? itemCalories : 0} kcal)
+                    </Text>
+                  </View>
+                  {isDeleting ? (
+                    <ActivityIndicator size="small" color="#D32F2F" />
+                  ) : (
+                    <TouchableOpacity
+                      onPress={() => handleDeleteItem(item.item_id)}
+                      style={styles.deleteButton}
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    >
+                      <Icon name="trash-can-outline" size={20} color="#D32F2F" />
+                    </TouchableOpacity>
+                  )}
+                </View>
+              );
+            })}
           </Card.Content>
         )}
       </Card>
     );
   };
 
-  const totalCalories = meals.reduce((sum, meal) => sum + parseFloat(meal.total_calories), 0);
-  const totalProtein = meals.reduce((sum, meal) => sum + parseFloat(meal.total_protein), 0);
+  const totalCalories = Math.round(meals.reduce((sum, meal) => sum + parseFloat(meal.total_calories || 0), 0));
+  const totalProtein = (meals.reduce((sum, meal) => sum + parseFloat(meal.total_protein || 0), 0)).toFixed(1);
 
-  // Hardcoded goals for demo
+  // Targets
   const goalCalories = 1500;
   const goalProtein = 50;
 
@@ -99,23 +167,32 @@ export default function NutritionScreen({ navigation }) {
     const month = parseInt(parts[1], 10) - 1;
     const day = parseInt(parts[2], 10);
     const d = new Date(year, month, day + days);
-    const yyyy = d.getFullYear();
-    const mm = String(d.getMonth() + 1).padStart(2, '0');
-    const dd = String(d.getDate()).padStart(2, '0');
-    setSelectedDate(`${yyyy}-${mm}-${dd}`);
+    setSelectedDate(getLocalDateString(d));
   };
 
+  const isToday = selectedDate === getLocalDateString();
+
   return (
-    <ScrollView style={styles.container}>
+    <ScrollView
+      style={styles.container}
+      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={['#2E7D32']} />}
+    >
       <View style={styles.headerRow}>
-        <TouchableOpacity onPress={() => changeDate(-1)}>
-          <Icon name="chevron-left" size={30} color="#2E7D32" />
+        <TouchableOpacity onPress={() => changeDate(-1)} style={styles.arrowButton}>
+          <Icon name="chevron-left" size={28} color="#2E7D32" />
         </TouchableOpacity>
         
-        <Text style={styles.dateText}>{selectedDate}</Text>
+        <View style={styles.dateContainer}>
+          <Text style={styles.dateText}>{selectedDate}</Text>
+          {!isToday && (
+            <TouchableOpacity onPress={() => setSelectedDate(getLocalDateString())} style={styles.todayBadge}>
+              <Text style={styles.todayBadgeText}>Jump to Today</Text>
+            </TouchableOpacity>
+          )}
+        </View>
         
-        <TouchableOpacity onPress={() => changeDate(1)}>
-          <Icon name="chevron-right" size={30} color="#2E7D32" />
+        <TouchableOpacity onPress={() => changeDate(1)} style={styles.arrowButton}>
+          <Icon name="chevron-right" size={28} color="#2E7D32" />
         </TouchableOpacity>
       </View>
 
@@ -127,17 +204,17 @@ export default function NutritionScreen({ navigation }) {
           <ProgressBar progress={Math.min(totalCalories / goalCalories, 1)} color="#E65100" style={styles.progressBar} />
           
           <Text style={styles.progressLabel}>Protein: {totalProtein} / {goalProtein} g</Text>
-          <ProgressBar progress={Math.min(totalProtein / goalProtein, 1)} color="#1565C0" style={styles.progressBar} />
+          <ProgressBar progress={Math.min(parseFloat(totalProtein) / goalProtein, 1)} color="#1565C0" style={styles.progressBar} />
         </Card.Content>
       </Card>
 
       {loading ? (
-        <ActivityIndicator size="small" color="#2E7D32" style={{marginTop: 20}} />
+        <ActivityIndicator size="small" color="#2E7D32" style={{ marginTop: 20 }} />
       ) : (
         mealTypes.map(type => renderMealSection(type))
       )}
       
-      <View style={{height: 40}} /> 
+      <View style={{ height: 40 }} /> 
     </ScrollView>
   );
 }
@@ -146,14 +223,23 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#F5F5F5' },
   center: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 20 },
   emptyText: { fontSize: 16, color: '#666', textAlign: 'center' },
-  headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 15, backgroundColor: '#FFF' },
+  headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 15, paddingVertical: 12, backgroundColor: '#FFF' },
+  arrowButton: { padding: 4 },
+  dateContainer: { alignItems: 'center' },
   dateText: { fontSize: 18, fontWeight: 'bold', color: '#2E7D32' },
-  summaryCard: { margin: 15, backgroundColor: '#FFF', borderRadius: 10 },
+  todayBadge: { marginTop: 3, backgroundColor: '#E8F5E9', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 10 },
+  todayBadgeText: { fontSize: 11, color: '#2E7D32', fontWeight: '600' },
+  summaryCard: { margin: 15, backgroundColor: '#FFF', borderRadius: 10, elevation: 2 },
   summaryTitle: { fontSize: 18, fontWeight: 'bold', marginBottom: 15, color: '#333' },
   progressLabel: { fontSize: 14, marginBottom: 5, color: '#555' },
   progressBar: { height: 8, borderRadius: 4, marginBottom: 15 },
-  mealCard: { marginHorizontal: 15, marginBottom: 15, backgroundColor: '#FFF' },
-  foodRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 5, borderTopWidth: 1, borderTopColor: '#EEE' },
-  foodName: { fontSize: 14, color: '#333', flex: 1 },
-  foodDetails: { fontSize: 12, color: '#666' }
+  mealCard: { marginHorizontal: 15, marginBottom: 15, backgroundColor: '#FFF', borderRadius: 10, elevation: 1 },
+  mealTitle: { fontSize: 16, fontWeight: 'bold', color: '#333' },
+  mealSubtitleActive: { color: '#2E7D32', fontWeight: '600', fontSize: 13 },
+  mealSubtitleEmpty: { color: '#888', fontSize: 13 },
+  itemsContent: { paddingTop: 0, paddingBottom: 10 },
+  foodRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 8, borderTopWidth: 1, borderTopColor: '#F0F0F0' },
+  foodName: { fontSize: 14, fontWeight: '600', color: '#333' },
+  foodDetails: { fontSize: 12, color: '#666', marginTop: 2 },
+  deleteButton: { padding: 6 },
 });

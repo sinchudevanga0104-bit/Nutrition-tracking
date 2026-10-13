@@ -95,77 +95,163 @@ export default function VoiceAssistantScreen({ navigation }) {
     return () => loop && loop.stop();
   }, [isListening, isSpeaking, loading]);
 
-  // Setup Web Speech Recognition if on Web browser
+  // Cleanup recognition on unmount
   useEffect(() => {
-    if (Platform.OS === 'web' && typeof window !== 'undefined') {
-      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-      if (SpeechRecognition) {
-        const recognition = new SpeechRecognition();
-        recognition.continuous = false;
-        recognition.interimResults = false;
-        recognition.lang = 'en-US';
-
-        recognition.onresult = (event) => {
-          const transcript = event.results[0][0].transcript;
-          setQueryText(transcript);
-          setIsListening(false);
-          handleSendQuery(transcript);
-        };
-
-        recognition.onerror = () => {
-          setIsListening(false);
-        };
-
-        recognition.onend = () => {
-          setIsListening(false);
-        };
-
-        recognitionRef.current = recognition;
+    return () => {
+      if (recognitionRef.current) {
+        try {
+          recognitionRef.current.abort();
+        } catch (e) {}
       }
-    }
+      if (Platform.OS === 'web' && typeof window !== 'undefined' && window.speechSynthesis) {
+        window.speechSynthesis.cancel();
+      }
+    };
   }, []);
 
   const speakText = (text) => {
     if (!speechEnabled) return;
     if (Platform.OS === 'web' && typeof window !== 'undefined' && window.speechSynthesis) {
-      window.speechSynthesis.cancel();
-      const cleanText = text.replace(/[*#]/g, '');
-      const utterance = new SpeechSynthesisUtterance(cleanText);
-      utterance.rate = 1.0;
-      utterance.pitch = 1.0;
-      utterance.onstart = () => setIsSpeaking(true);
-      utterance.onend = () => setIsSpeaking(false);
-      utterance.onerror = () => setIsSpeaking(false);
-      window.speechSynthesis.speak(utterance);
+      try {
+        window.speechSynthesis.cancel();
+        const cleanText = text.replace(/[*#_]/g, '');
+        const utterance = new SpeechSynthesisUtterance(cleanText);
+        utterance.rate = 1.0;
+        utterance.pitch = 1.0;
+        utterance.lang = 'en-US';
+
+        const voices = window.speechSynthesis.getVoices();
+        if (voices.length > 0) {
+          const enVoice = voices.find((v) => v.lang.startsWith('en') && !v.name.includes('Bad'));
+          if (enVoice) utterance.voice = enVoice;
+        }
+
+        utterance.onstart = () => setIsSpeaking(true);
+        utterance.onend = () => setIsSpeaking(false);
+        utterance.onerror = () => setIsSpeaking(false);
+
+        if (window.speechSynthesis.paused) {
+          window.speechSynthesis.resume();
+        }
+        window.speechSynthesis.speak(utterance);
+      } catch (e) {
+        console.warn('Speech synthesis error:', e);
+        setIsSpeaking(false);
+      }
+    }
+  };
+
+  const stopListening = () => {
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.abort();
+      } catch (e) {}
+      recognitionRef.current = null;
+    }
+    setIsListening(false);
+  };
+
+  const startListening = async () => {
+    if (Platform.OS === 'web' && typeof window !== 'undefined') {
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!SpeechRecognition) {
+        Alert.alert(
+          'Microphone Not Supported',
+          'Your current web browser does not support Web Speech Recognition. Please use Google Chrome or Microsoft Edge, or type your query in the text box below.'
+        );
+        return;
+      }
+
+      // Explicitly prompt/verify microphone access
+      try {
+        if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          stream.getTracks().forEach((track) => track.stop());
+        }
+      } catch (permErr) {
+        console.warn('Microphone permission check error:', permErr);
+        Alert.alert(
+          'Microphone Access Needed',
+          'Please allow microphone access in your browser settings (look for the microphone icon in your address bar) so NutriVoice can hear you.'
+        );
+        setIsListening(false);
+        return;
+      }
+
+      // Stop previous instance if any
+      stopListening();
+
+      try {
+        const recognition = new SpeechRecognition();
+        recognition.continuous = false;
+        recognition.interimResults = true;
+        recognition.lang = 'en-US';
+
+        let capturedTranscript = '';
+
+        recognition.onstart = () => {
+          setIsListening(true);
+        };
+
+        recognition.onresult = (event) => {
+          let interimTranscript = '';
+          for (let i = event.resultIndex; i < event.results.length; ++i) {
+            if (event.results[i].isFinal) {
+              capturedTranscript += event.results[i][0].transcript;
+            } else {
+              interimTranscript += event.results[i][0].transcript;
+            }
+          }
+          const liveText = capturedTranscript || interimTranscript;
+          if (liveText) {
+            setQueryText(liveText);
+          }
+        };
+
+        recognition.onerror = (event) => {
+          console.warn('SpeechRecognition error:', event.error);
+          setIsListening(false);
+          recognitionRef.current = null;
+          if (event.error === 'not-allowed') {
+            Alert.alert(
+              'Microphone Permission Denied',
+              'Microphone access was denied. Please click the microphone/lock icon in your browser address bar to allow microphone access, or type your message below.'
+            );
+          } else if (event.error === 'no-speech') {
+            Alert.alert(
+              'No Speech Detected',
+              "We didn't hear anything. Please try speaking closer to your mic or type your prompt."
+            );
+          } else if (event.error !== 'aborted') {
+            Alert.alert('Voice Recognition', `Voice error (${event.error}). You can also type your message.`);
+          }
+        };
+
+        recognition.onend = () => {
+          setIsListening(false);
+          recognitionRef.current = null;
+          const query = capturedTranscript.trim() || queryText.trim();
+          if (query) {
+            handleSendQuery(query);
+          }
+        };
+
+        recognitionRef.current = recognition;
+        recognition.start();
+      } catch (err) {
+        console.error('Failed to start speech recognition:', err);
+        setIsListening(false);
+      }
+    } else {
+      Alert.alert('Voice Input', 'Please use your keyboard voice dictation or type your message in the text box below.');
     }
   };
 
   const toggleListening = () => {
     if (isListening) {
-      if (recognitionRef.current) recognitionRef.current.stop();
-      setIsListening(false);
+      stopListening();
     } else {
-      setIsListening(true);
-      if (recognitionRef.current) {
-        try {
-          recognitionRef.current.start();
-        } catch (e) {
-          console.log('Speech recognition start error', e);
-        }
-      } else {
-        // Simulated speech trigger fallback for mobile / demo
-        setTimeout(() => {
-          setIsListening(false);
-          const samplePrompts = [
-            `I fed ${activeChild ? activeChild.name : 'Aarav'} 2 idlis for breakfast`,
-            `Suggest iron-rich dinner recipes for my toddler`,
-            `How is ${activeChild ? activeChild.name : 'Aarav'}'s protein intake today?`,
-          ];
-          const randomPrompt = samplePrompts[Math.floor(Math.random() * samplePrompts.length)];
-          setQueryText(randomPrompt);
-          handleSendQuery(randomPrompt);
-        }, 2200);
-      }
+      startListening();
     }
   };
 
@@ -220,7 +306,8 @@ export default function VoiceAssistantScreen({ navigation }) {
   const handleConfirmLogMeal = async (actionData, msgId) => {
     if (!actionData) return;
     try {
-      const todayStr = new Date().toISOString().split('T')[0];
+      const today = new Date();
+      const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
       const childId = actionData.child_id || activeChild?.child_id;
 
       if (!childId) {
@@ -228,10 +315,19 @@ export default function VoiceAssistantScreen({ navigation }) {
         return;
       }
 
+      // Normalize meal type (e.g., Snack -> Snacks)
+      let mealType = actionData.meal_type || 'Breakfast';
+      if (mealType.toLowerCase() === 'snack') {
+        mealType = 'Snacks';
+      } else {
+        mealType = mealType.charAt(0).toUpperCase() + mealType.slice(1).toLowerCase();
+        if (mealType === 'Snack') mealType = 'Snacks';
+      }
+
       // 1. Create or fetch meal for today & meal_type
       const mealResp = await apiClient.post('/meals/', {
         child_id: childId,
-        meal_type: actionData.meal_type || 'Breakfast',
+        meal_type: mealType,
         meal_date: todayStr,
       });
 
@@ -240,14 +336,12 @@ export default function VoiceAssistantScreen({ navigation }) {
       // 2. Add meal item
       await apiClient.post(`/meals/${mealId}/items`, {
         food_id: actionData.food_id || 1,
-        quantity: actionData.quantity || 1.0,
+        quantity: parseFloat(actionData.quantity) || 1.0,
       });
 
       setLoggingSuccessId(msgId);
-      speakText(`Successfully logged ${actionData.food_name} into ${actionData.meal_type}!`);
-      if (Platform.OS !== 'web') {
-        Alert.alert('Meal Logged! 🎉', `${actionData.food_name} has been added to today's ${actionData.meal_type}.`);
-      }
+      speakText(`Successfully logged ${actionData.food_name} into ${mealType}!`);
+      Alert.alert('Meal Logged! 🎉', `${actionData.food_name} has been added to today's ${mealType}.`);
     } catch (err) {
       console.log('Error logging meal via voice', err);
       Alert.alert('Logging Failed', formatApiError(err));
