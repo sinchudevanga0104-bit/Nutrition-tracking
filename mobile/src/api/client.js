@@ -4,7 +4,7 @@ import Constants from 'expo-constants';
 import { Platform } from 'react-native';
 
 // Public tunnel URL for backend when running Expo on phone / hotspot
-const TUNNEL_URL = 'https://surfaces-stood-album-name.trycloudflare.com';
+const TUNNEL_URL = 'https://freely-river-orlando-amplifier.trycloudflare.com';
 const CURRENT_LAN_URL = 'http://192.0.0.2:8000';
 
 const getCandidateUrls = () => {
@@ -76,6 +76,12 @@ apiClient.interceptors.request.use(
   }
 );
 
+let unauthorizedHandler = null;
+
+export const setUnauthorizedHandler = (handler) => {
+  unauthorizedHandler = handler;
+};
+
 apiClient.interceptors.response.use(
   (response) => {
     return response;
@@ -100,6 +106,9 @@ apiClient.interceptors.response.use(
 
     if (error.response && error.response.status === 401) {
       await AsyncStorage.removeItem('userToken');
+      if (typeof unauthorizedHandler === 'function') {
+        unauthorizedHandler();
+      }
     }
     return Promise.reject(error);
   }
@@ -108,6 +117,9 @@ apiClient.interceptors.response.use(
 export const formatApiError = (err, fallbackMessage = 'An unexpected error occurred.') => {
   if (err?.code === 'ERR_NETWORK' || err?.message === 'Network Error') {
     return 'Cannot connect to backend server. Make sure the FastAPI server is running on port 8000 (uvicorn app.main:app --reload).';
+  }
+  if (err?.response?.status === 401 || err?.response?.data?.detail === 'Not authenticated' || err?.response?.data?.detail === 'Could not validate credentials') {
+    return 'Your session has expired or you are not logged in. Please log in again.';
   }
   if (err?.response?.data?.detail) {
     const detail = err.response.data.detail;

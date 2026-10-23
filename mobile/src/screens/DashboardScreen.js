@@ -85,14 +85,18 @@ export default function DashboardScreen({ navigation }) {
         <Card style={styles.card}>
           <Card.Title 
             title="Today's Nutrition" 
-            left={(props) => <Avatar.Icon {...props} icon="food-apple" style={{backgroundColor: '#FFE0B2'}} color="#E65100" />} 
+            titleStyle={{ fontSize: 13, fontWeight: 'bold' }}
+            left={(props) => <Avatar.Icon {...props} icon="food-apple" size={40} style={{backgroundColor: '#FFE0B2'}} color="#E65100" />} 
           />
           <Card.Content>
-            <Text style={styles.statText}>{summary?.today_calories || 0} kcal</Text>
-            <Text style={styles.statSubText}>{summary?.today_protein || 0}g protein</Text>
+            <Text style={styles.statText}>{summary?.today_calories || 0} <Text style={{fontSize: 13, fontWeight: 'normal'}}>kcal</Text></Text>
+            <Text style={styles.statSubText}>WHO Target: {summary?.target_calories || 1500} kcal</Text>
+            <Text style={[styles.statSubText, { color: '#1565C0', marginTop: 2 }]}>
+              Protein: {summary?.today_protein || 0}/{summary?.target_protein || 25}g
+            </Text>
           </Card.Content>
           <Card.Actions>
-            <Button onPress={() => navigation.navigate('Nutrition')}>View Diet</Button>
+            <Button compact onPress={() => navigation.navigate('Nutrition')}>View Diet</Button>
           </Card.Actions>
         </Card>
 
@@ -100,29 +104,39 @@ export default function DashboardScreen({ navigation }) {
         <Card style={styles.card}>
           <Card.Title 
             title="Water Tracker" 
-            left={(props) => <Avatar.Icon {...props} icon="water" style={{backgroundColor: '#E1F5FE'}} color="#0288D1" />} 
+            titleStyle={{ fontSize: 13, fontWeight: 'bold' }}
+            left={(props) => <Avatar.Icon {...props} icon="water" size={40} style={{backgroundColor: '#E1F5FE'}} color="#0288D1" />} 
           />
           <Card.Content>
-            <Text style={styles.statText}>{summary?.today_water_ml || 0} ml</Text>
+            <Text style={styles.statText}>{summary?.today_water_ml || 0} <Text style={{fontSize: 13, fontWeight: 'normal'}}>ml</Text></Text>
             <Text style={styles.statSubText}>Goal: {summary?.target_water_ml || 1500} ml</Text>
           </Card.Content>
           <Card.Actions>
-            <Button onPress={() => navigation.navigate('Water Tracker')}>Tracker</Button>
+            <Button compact onPress={() => navigation.navigate('Water Tracker')}>Tracker</Button>
           </Card.Actions>
         </Card>
 
         {/* Growth Card */}
         <Card style={styles.card}>
           <Card.Title 
-            title="Latest BMI" 
-            left={(props) => <Avatar.Icon {...props} icon="chart-line" style={{backgroundColor: '#E3F2FD'}} color="#1565C0" />} 
+            title="WHO Growth Status" 
+            titleStyle={{ fontSize: 13, fontWeight: 'bold' }}
+            left={(props) => <Avatar.Icon {...props} icon="chart-line" size={40} style={{backgroundColor: '#E3F2FD'}} color="#1565C0" />} 
           />
           <Card.Content>
-            <Text style={styles.statText}>{summary?.latest_bmi || '--'}</Text>
-            <Text style={styles.statSubText}>{summary?.latest_bmi ? 'View growth chart' : 'No measurements logged'}</Text>
+            <Text style={styles.statText}>{summary?.latest_bmi || '--'} <Text style={{fontSize: 13, fontWeight: 'normal'}}>BMI</Text></Text>
+            {summary?.who_status ? (
+              <View style={[styles.whoStatusBadge, { backgroundColor: (summary.who_badge_color || '#2E7D32') + '15', borderColor: summary.who_badge_color || '#2E7D32' }]}>
+                <Text style={[styles.whoStatusText, { color: summary.who_badge_color || '#2E7D32' }]} numberOfLines={1}>
+                  {summary.who_status}
+                </Text>
+              </View>
+            ) : (
+              <Text style={styles.statSubText}>{summary?.latest_bmi ? 'WHO Standard Evaluated' : 'No records yet'}</Text>
+            )}
           </Card.Content>
           <Card.Actions>
-            <Button onPress={() => navigation.navigate('Growth')}>Update</Button>
+            <Button compact onPress={() => navigation.navigate('Growth')}>Growth Chart</Button>
           </Card.Actions>
         </Card>
 
@@ -164,5 +178,7 @@ const styles = StyleSheet.create({
   statText: { fontSize: 24, fontWeight: 'bold', color: '#333' },
   statSubText: { fontSize: 12, color: '#888', marginTop: 5 },
   insightText: { fontSize: 14, color: '#444', lineHeight: 20, fontStyle: 'italic' },
-  voiceBannerText: { fontSize: 14, color: '#2E7D32', lineHeight: 20 }
+  voiceBannerText: { fontSize: 14, color: '#2E7D32', lineHeight: 20 },
+  whoStatusBadge: { marginTop: 6, paddingHorizontal: 6, paddingVertical: 3, borderRadius: 6, borderWidth: 1, alignSelf: 'flex-start' },
+  whoStatusText: { fontSize: 10, fontWeight: '700' }
 });

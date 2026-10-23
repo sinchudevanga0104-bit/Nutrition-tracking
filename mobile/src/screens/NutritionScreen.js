@@ -21,6 +21,12 @@ export default function NutritionScreen({ navigation }) {
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [deletingItemId, setDeletingItemId] = useState(null);
+  const [whoTargets, setWhoTargets] = useState({
+    calories: 1350,
+    protein: 19.0,
+    age_group: 'Child',
+    who_source: 'WHO/FAO Recommended Nutrient Intakes'
+  });
 
   const fetchMeals = useCallback(async (showSpinner = true) => {
     if (!activeChild?.child_id) return;
@@ -39,6 +45,17 @@ export default function NutritionScreen({ navigation }) {
       if (showSpinner) setLoading(false);
     }
   }, [activeChild?.child_id, selectedDate]);
+
+  // Fetch WHO recommended dietary guidelines for this specific child
+  useEffect(() => {
+    if (activeChild?.child_id) {
+      apiClient.get(`/meals/who-targets/${activeChild.child_id}`)
+        .then(res => {
+          if (res.data) setWhoTargets(res.data);
+        })
+        .catch(e => console.log('Error fetching WHO targets', e));
+    }
+  }, [activeChild?.child_id]);
 
   // Re-fetch meals when screen comes into focus (e.g., returning from AddMealScreen or switching tabs)
   useEffect(() => {
@@ -157,9 +174,9 @@ export default function NutritionScreen({ navigation }) {
   const totalCalories = Math.round(meals.reduce((sum, meal) => sum + parseFloat(meal.total_calories || 0), 0));
   const totalProtein = (meals.reduce((sum, meal) => sum + parseFloat(meal.total_protein || 0), 0)).toFixed(1);
 
-  // Targets
-  const goalCalories = 1500;
-  const goalProtein = 50;
+  // Official WHO Daily Nutritional Targets for this child
+  const goalCalories = whoTargets?.calories || 1350;
+  const goalProtein = whoTargets?.protein || 19.0;
 
   const changeDate = (days) => {
     const parts = selectedDate.split('-');
@@ -199,6 +216,9 @@ export default function NutritionScreen({ navigation }) {
       <Card style={styles.summaryCard}>
         <Card.Content>
           <Text style={styles.summaryTitle}>Daily Summary for {activeChild.name}</Text>
+          <Text style={styles.whoSubtitle}>
+            🎯 WHO Daily Benchmark: {goalCalories} kcal • {goalProtein}g Protein ({whoTargets?.age_group})
+          </Text>
           
           <Text style={styles.progressLabel}>Calories: {totalCalories} / {goalCalories} kcal</Text>
           <ProgressBar progress={Math.min(totalCalories / goalCalories, 1)} color="#E65100" style={styles.progressBar} />
@@ -230,7 +250,8 @@ const styles = StyleSheet.create({
   todayBadge: { marginTop: 3, backgroundColor: '#E8F5E9', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 10 },
   todayBadgeText: { fontSize: 11, color: '#2E7D32', fontWeight: '600' },
   summaryCard: { margin: 15, backgroundColor: '#FFF', borderRadius: 10, elevation: 2 },
-  summaryTitle: { fontSize: 18, fontWeight: 'bold', marginBottom: 15, color: '#333' },
+  summaryTitle: { fontSize: 18, fontWeight: 'bold', marginBottom: 4, color: '#333' },
+  whoSubtitle: { fontSize: 12, color: '#2E7D32', fontWeight: '600', marginBottom: 14 },
   progressLabel: { fontSize: 14, marginBottom: 5, color: '#555' },
   progressBar: { height: 8, borderRadius: 4, marginBottom: 15 },
   mealCard: { marginHorizontal: 15, marginBottom: 15, backgroundColor: '#FFF', borderRadius: 10, elevation: 1 },

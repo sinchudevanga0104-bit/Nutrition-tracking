@@ -185,7 +185,8 @@ export default function VoiceAssistantScreen({ navigation }) {
         const recognition = new SpeechRecognition();
         recognition.continuous = false;
         recognition.interimResults = true;
-        recognition.lang = 'en-US';
+        // Use Indian English for native recognition of Indian dishes & accents
+        recognition.lang = 'en-IN';
 
         let capturedTranscript = '';
 
@@ -424,10 +425,21 @@ export default function VoiceAssistantScreen({ navigation }) {
                           </Text>
                         </View>
 
-                        {loggingSuccessId === msg.id ? (
-                          <View style={styles.loggedSuccessBadge}>
-                            <Icon name="check-circle" size={20} color="#2E7D32" />
-                            <Text style={styles.loggedSuccessText}>Saved to {msg.actionData.meal_type} Log!</Text>
+                        {msg.actionData.saved || loggingSuccessId === msg.id ? (
+                          <View style={{ marginTop: 8 }}>
+                            <View style={styles.loggedSuccessBadge}>
+                              <Icon name="check-circle" size={20} color="#2E7D32" />
+                              <Text style={styles.loggedSuccessText}>Saved to {msg.actionData.meal_type} Log!</Text>
+                            </View>
+                            <Button
+                              mode="outlined"
+                              icon="chart-bar"
+                              textColor="#2E7D32"
+                              style={{ marginTop: 8 }}
+                              onPress={() => navigation.navigate('Nutrition')}
+                            >
+                              View in Nutrition Log
+                            </Button>
                           </View>
                         ) : (
                           <Button
@@ -440,6 +452,84 @@ export default function VoiceAssistantScreen({ navigation }) {
                             Confirm & Save Meal
                           </Button>
                         )}
+                      </View>
+                    )}
+
+                    {/* ACTION CARD: WATER TRACK */}
+                    {msg.actionType === 'WATER_TRACK' && msg.actionData && (
+                      <View style={[styles.actionCardContainer, { backgroundColor: '#E1F5FE', borderColor: '#81D4FA' }]}>
+                        <View style={styles.actionHeader}>
+                          <Icon name="water" size={24} color="#0288D1" />
+                          <Text style={[styles.actionTitle, { color: '#0277BD' }]}>Water Intake Logged</Text>
+                        </View>
+                        <View style={styles.actionDetails}>
+                          <Text style={styles.foodItemName}>
+                            +{msg.actionData.amount_ml} ml Water Logged
+                          </Text>
+                          <Text style={styles.foodItemSub}>
+                            Today's Intake: <Text style={{ fontWeight: 'bold' }}>{msg.actionData.total_today} ml</Text>
+                          </Text>
+                        </View>
+                        <Button
+                          mode="outlined"
+                          icon="cup-water"
+                          textColor="#0277BD"
+                          style={{ marginTop: 8 }}
+                          onPress={() => navigation.navigate('Water Tracker')}
+                        >
+                          Open Water Tracker
+                        </Button>
+                      </View>
+                    )}
+
+                    {/* ACTION CARD: NAVIGATE */}
+                    {msg.actionType === 'NAVIGATE' && msg.actionData?.screen && (
+                      <View style={[styles.actionCardContainer, { backgroundColor: '#EDE7F6', borderColor: '#D1C4E9' }]}>
+                        <View style={styles.actionHeader}>
+                          <Icon name="compass" size={24} color="#673AB7" />
+                          <Text style={[styles.actionTitle, { color: '#512DA8' }]}>Voice Navigation</Text>
+                        </View>
+                        <View style={styles.actionDetails}>
+                          <Text style={styles.foodItemName}>
+                            {msg.actionData.title || msg.actionData.screen}
+                          </Text>
+                        </View>
+                        <Button
+                          mode="contained"
+                          buttonColor="#673AB7"
+                          icon="arrow-right-bold"
+                          style={{ marginTop: 8 }}
+                          onPress={() => navigation.navigate(msg.actionData.screen)}
+                        >
+                          Open {msg.actionData.screen}
+                        </Button>
+                      </View>
+                    )}
+
+                    {/* ACTION CARD: GROWTH LOGGED */}
+                    {msg.actionType === 'GROWTH_LOGGED' && msg.actionData && (
+                      <View style={[styles.actionCardContainer, { backgroundColor: '#E8F5E9', borderColor: '#A5D6A7' }]}>
+                        <View style={styles.actionHeader}>
+                          <Icon name="chart-line" size={24} color="#2E7D32" />
+                          <Text style={[styles.actionTitle, { color: '#2E7D32' }]}>Growth Metric Logged</Text>
+                        </View>
+                        <View style={styles.actionDetails}>
+                          <Text style={styles.foodItemName}>
+                            {msg.actionData.weight} kg • {msg.actionData.height} cm
+                          </Text>
+                          <Text style={styles.foodItemSub}>
+                            BMI: <Text style={{ fontWeight: 'bold' }}>{msg.actionData.bmi}</Text> (Optimal)
+                          </Text>
+                        </View>
+                        <Button
+                          mode="outlined"
+                          icon="chart-line"
+                          textColor="#2E7D32"
+                          style={{ marginTop: 8 }}
+                          onPress={() => navigation.navigate('Growth')}
+                        >
+                          Open Growth Chart
+                        </Button>
                       </View>
                     )}
 

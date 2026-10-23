@@ -29,6 +29,7 @@ export default function WaterTrackerScreen({ navigation }) {
   const [reminderEnabled, setReminderEnabled] = useState(true);
   const [reminderInterval, setReminderInterval] = useState('2');
   const [targetGoal, setTargetGoal] = useState('1500');
+  const [activeReminderAlert, setActiveReminderAlert] = useState(null);
 
   // Animation for water bottle height
   const fillAnim = useRef(new Animated.Value(0)).current;
@@ -38,6 +39,20 @@ export default function WaterTrackerScreen({ navigation }) {
       fetchWaterStatus();
     }
   }, [activeChild]);
+
+  // Periodic Reminder Timer when reminders are enabled
+  useEffect(() => {
+    let reminderTimer = null;
+    if (reminderEnabled && activeChild) {
+      const intervalMs = (parseFloat(reminderInterval) || 2) * 60 * 60 * 1000;
+      reminderTimer = setInterval(() => {
+        triggerHydrationReminder();
+      }, intervalMs);
+    }
+    return () => {
+      if (reminderTimer) clearInterval(reminderTimer);
+    };
+  }, [reminderEnabled, activeChild, reminderInterval]);
 
   useEffect(() => {
     if (waterData) {
@@ -66,6 +81,43 @@ export default function WaterTrackerScreen({ navigation }) {
     }
   };
 
+  // Play pleasant water notification chime on Web
+  const playWaterChime = () => {
+    if (Platform.OS === 'web' && typeof window !== 'undefined') {
+      try {
+        const AudioContext = window.AudioContext || window.webkitAudioContext;
+        if (AudioContext) {
+          const ctx = new AudioContext();
+          const now = ctx.currentTime;
+          
+          const osc1 = ctx.createOscillator();
+          const gain1 = ctx.createGain();
+          osc1.type = 'sine';
+          osc1.frequency.setValueAtTime(659.25, now);
+          gain1.gain.setValueAtTime(0.2, now);
+          gain1.gain.exponentialRampToValueAtTime(0.001, now + 0.35);
+          osc1.connect(gain1);
+          gain1.connect(ctx.destination);
+          osc1.start(now);
+          osc1.stop(now + 0.35);
+
+          const osc2 = ctx.createOscillator();
+          const gain2 = ctx.createGain();
+          osc2.type = 'sine';
+          osc2.frequency.setValueAtTime(987.77, now + 0.12);
+          gain2.gain.setValueAtTime(0.25, now + 0.12);
+          gain2.gain.exponentialRampToValueAtTime(0.001, now + 0.55);
+          osc2.connect(gain2);
+          gain2.connect(ctx.destination);
+          osc2.start(now + 0.12);
+          osc2.stop(now + 0.55);
+        }
+      } catch (e) {
+        console.log('Audio chime error', e);
+      }
+    }
+  };
+
   const triggerWebNotification = (title, body) => {
     if (Platform.OS === 'web' && typeof window !== 'undefined' && 'Notification' in window) {
       if (Notification.permission === 'granted') {
@@ -77,6 +129,72 @@ export default function WaterTrackerScreen({ navigation }) {
           }
         });
       }
+    }
+  };
+
+  const triggerHydrationReminder = (customMsg) => {
+    const childName = activeChild?.name || 'your child';
+    const title = `💧 Hydration Reminder: Time to Drink!`;
+    const body =
+      customMsg ||
+      `Time for ${childName} to drink a glass of fresh water (150-250 ml). Keep up the hydration!`;
+
+    // 1. Play audio chime
+    playWaterChime();
+
+    // 2. Display visible in-app reminder card in this section
+    setActiveReminderAlert({
+      title,
+      body,
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    });
+
+    // 3. Trigger system / browser notification
+    triggerWebNotification(title, body);
+
+    // 4. Native device alert fallback
+    if (Platform.OS !== 'web') {
+      Alert.alert(title, body, [
+        { text: 'Drink 1 Glass (+250 ml)', onPress: () => handleLogWater(250) },
+        { text: 'Dismiss', style: 'cancel' },
+      ]);
+    }
+  };
+
+  const requestBrowserNotificationPermission = () => {
+    if (Platform.OS === 'web' && typeof window !== 'undefined' && 'Notification' in window) {
+      Notification.requestPermission().then((permission) => {
+        if (permission === 'granted') {
+          triggerHydrationReminder('🔔 Device notifications enabled! You will receive live water reminders here.');
+        } else {
+          Alert.alert('Permission Status', `Notification permission: ${permission}`);
+        }
+      });
+    } else {
+      triggerHydrationReminder();
+    }
+  };
+
+  const handleToggleReminder = async (val) => {
+    setReminderEnabled(val);
+    if (!activeChild) return;
+    try {
+      await apiClient.post('/water/goal', {
+        child_id: activeChild.child_id,
+        daily_target_ml: parseInt(targetGoal, 10) || 1500,
+        reminder_enabled: val,
+        reminder_interval_hours: parseInt(reminderInterval, 10) || 2,
+        start_time: '08:00',
+        end_time: '20:00',
+      });
+      if (val) {
+        triggerHydrationReminder(`Hydration reminders activated! We will notify you to give water to ${activeChild.name}.`);
+      } else {
+        setActiveReminderAlert(null);
+      }
+      await fetchWaterStatus();
+    } catch (err) {
+      console.log('Error updating reminder goal', err);
     }
   };
 
@@ -267,7 +385,7 @@ export default function WaterTrackerScreen({ navigation }) {
       </Button>
 
       {/* Reminder Notification Banner */}
-      <Card style={styles.reminderBanner}>
+      <Card style={[styles.reminderBanner, activeReminderAlert && styles.activeReminderBorder]}>
         <Card.Content style={styles.reminderContent}>
           <Icon name="bell-ring-outline" size={28} color="#0288D1" style={{ marginRight: 12 }} />
           <View style={{ flex: 1 }}>
@@ -280,14 +398,71 @@ export default function WaterTrackerScreen({ navigation }) {
           </View>
           <Switch
             value={reminderEnabled}
-            onValueChange={(val) => {
-              setReminderEnabled(val);
-              handleSaveSettings();
-            }}
+            onValueChange={handleToggleReminder}
             color="#0288D1"
           />
         </Card.Content>
+
+        {/* Action Controls for Reminders */}
+        <View style={styles.reminderActionsRow}>
+          <TouchableOpacity
+            style={styles.testReminderBtn}
+            onPress={() => triggerHydrationReminder()}
+          >
+            <Icon name="bell-ring" size={16} color="#0288D1" />
+            <Text style={styles.testReminderBtnText}>🔔 Send Reminder Notification</Text>
+          </TouchableOpacity>
+
+          {Platform.OS === 'web' && (
+            <TouchableOpacity
+              style={styles.permissionBtn}
+              onPress={requestBrowserNotificationPermission}
+            >
+              <Icon name="cellphone-sound" size={16} color="#2E7D32" />
+              <Text style={styles.permissionBtnText}>Enable Device Alert</Text>
+            </TouchableOpacity>
+          )}
+        </View>
       </Card>
+
+      {/* ACTIVE NOTIFICATION POPUP CARD - Right in this part! */}
+      {activeReminderAlert && (
+        <Card style={styles.activeAlertCard}>
+          <Card.Content style={styles.activeAlertContent}>
+            <View style={styles.activeAlertHeader}>
+              <View style={styles.alertBadge}>
+                <Icon name="water-alert" size={18} color="#E65100" />
+                <Text style={styles.alertBadgeText}>WATER REMINDER NOTIFICATION</Text>
+              </View>
+              <Text style={styles.alertTimeText}>{activeReminderAlert.timestamp}</Text>
+            </View>
+
+            <Text style={styles.alertTitleText}>{activeReminderAlert.title}</Text>
+            <Text style={styles.alertBodyText}>{activeReminderAlert.body}</Text>
+
+            <View style={styles.alertButtonRow}>
+              <TouchableOpacity
+                style={styles.drinkNowBtn}
+                onPress={() => {
+                  handleLogWater(250);
+                  setActiveReminderAlert(null);
+                }}
+                disabled={logging}
+              >
+                <Icon name="cup-water" size={18} color="#FFF" style={{ marginRight: 6 }} />
+                <Text style={styles.drinkNowBtnText}>Drink 1 Glass (+250 ml)</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.dismissAlertBtn}
+                onPress={() => setActiveReminderAlert(null)}
+              >
+                <Text style={styles.dismissAlertBtnText}>Dismiss</Text>
+              </TouchableOpacity>
+            </View>
+          </Card.Content>
+        </Card>
+      )}
 
       {/* Today's Water Logs */}
       <Text style={[styles.sectionTitle, { marginTop: 20 }]}>Today's Water Log</Text>
@@ -449,6 +624,134 @@ const styles = StyleSheet.create({
   reminderContent: { flexDirection: 'row', alignItems: 'center', padding: 12 },
   reminderTitle: { fontSize: 15, fontWeight: 'bold', color: '#01579B' },
   reminderSub: { fontSize: 12, color: '#0288D1', marginTop: 2 },
+  reminderActionsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingBottom: 12,
+    gap: 8,
+    flexWrap: 'wrap',
+  },
+  testReminderBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#0288D1',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+  },
+  testReminderBtnText: {
+    fontSize: 12,
+    color: '#0288D1',
+    fontWeight: 'bold',
+    marginLeft: 5,
+  },
+  permissionBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#E8F5E9',
+    borderWidth: 1,
+    borderColor: '#A5D6A7',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+  },
+  permissionBtnText: {
+    fontSize: 12,
+    color: '#2E7D32',
+    fontWeight: '600',
+    marginLeft: 5,
+  },
+  activeReminderBorder: {
+    borderColor: '#0288D1',
+    borderWidth: 2,
+  },
+  activeAlertCard: {
+    backgroundColor: '#FFF8E1',
+    borderRadius: 14,
+    borderColor: '#FFE082',
+    borderWidth: 2,
+    marginTop: 12,
+    elevation: 4,
+    shadowColor: '#FF6F00',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 6,
+  },
+  activeAlertContent: {
+    padding: 14,
+  },
+  activeAlertHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  alertBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFE0B2',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+  },
+  alertBadgeText: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#E65100',
+    marginLeft: 4,
+    letterSpacing: 0.5,
+  },
+  alertTimeText: {
+    fontSize: 12,
+    color: '#8D6E63',
+    fontWeight: '600',
+  },
+  alertTitleText: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#3E2723',
+    marginBottom: 4,
+  },
+  alertBodyText: {
+    fontSize: 13,
+    color: '#5D4037',
+    lineHeight: 18,
+    marginBottom: 12,
+  },
+  alertButtonRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  drinkNowBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#0288D1',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 8,
+    elevation: 2,
+  },
+  drinkNowBtnText: {
+    color: '#FFF',
+    fontSize: 13,
+    fontWeight: 'bold',
+  },
+  dismissAlertBtn: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#BCAAA4',
+  },
+  dismissAlertBtnText: {
+    color: '#795548',
+    fontSize: 13,
+    fontWeight: '600',
+  },
   logCard: { backgroundColor: '#FFFFFF', marginBottom: 8, borderRadius: 10 },
   logContent: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10 },
   logAmount: { fontSize: 16, fontWeight: 'bold', color: '#333' },

@@ -175,3 +175,22 @@ def delete_meal_item(
     db.refresh(meal)
     
     return meal
+
+@router.get("/who-targets/{child_id}")
+def get_who_meal_targets(
+    child_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Returns official World Health Organization (WHO) & FAO recommended dietary targets
+    (Calories, Protein, Carbs, Fat, Water, Micronutrients) for the child's age and gender.
+    """
+    from app.services.who_standards import get_who_nutritional_targets
+    child = db.query(Child).filter(Child.child_id == child_id, Child.parent_id == current_user.user_id).first()
+    if not child:
+        raise HTTPException(status_code=403, detail="Not authorized to access this child's data")
+        
+    gender_str = str(child.gender.value if hasattr(child.gender, "value") else child.gender)
+    return get_who_nutritional_targets(child.dob, gender_str)
+
