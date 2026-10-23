@@ -14,6 +14,7 @@ import {
 } from 'react-native';
 import { Card, Button, Avatar, Chip, IconButton } from 'react-native-paper';
 import { MaterialCommunityIcons as Icon } from '@expo/vector-icons';
+import * as Speech from 'expo-speech';
 import { ChildContext } from '../context/ChildContext';
 import apiClient, { formatApiError } from '../api/client';
 
@@ -27,6 +28,7 @@ export default function VoiceAssistantScreen({ navigation }) {
   const [speechEnabled, setSpeechEnabled] = useState(true);
   const [loggingSuccessId, setLoggingSuccessId] = useState(null);
 
+  const inputRef = useRef(null);
   const scrollViewRef = useRef();
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const barAnim1 = useRef(new Animated.Value(0.4)).current;
@@ -111,10 +113,11 @@ export default function VoiceAssistantScreen({ navigation }) {
 
   const speakText = (text) => {
     if (!speechEnabled) return;
+    const cleanText = text.replace(/[*#_]/g, '');
+
     if (Platform.OS === 'web' && typeof window !== 'undefined' && window.speechSynthesis) {
       try {
         window.speechSynthesis.cancel();
-        const cleanText = text.replace(/[*#_]/g, '');
         const utterance = new SpeechSynthesisUtterance(cleanText);
         utterance.rate = 1.0;
         utterance.pitch = 1.0;
@@ -138,6 +141,23 @@ export default function VoiceAssistantScreen({ navigation }) {
         console.warn('Speech synthesis error:', e);
         setIsSpeaking(false);
       }
+    } else {
+      // Mobile iOS/Android using expo-speech
+      try {
+        setIsSpeaking(true);
+        Speech.stop();
+        Speech.speak(cleanText, {
+          language: 'en-US',
+          rate: 1.0,
+          onStart: () => setIsSpeaking(true),
+          onDone: () => setIsSpeaking(false),
+          onStopped: () => setIsSpeaking(false),
+          onError: () => setIsSpeaking(false),
+        });
+      } catch (e) {
+        console.warn('expo-speech error:', e);
+        setIsSpeaking(false);
+      }
     }
   };
 
@@ -152,6 +172,12 @@ export default function VoiceAssistantScreen({ navigation }) {
   };
 
   const startListening = async () => {
+    // If the input already has text (e.g. from keyboard voice dictation), send it immediately!
+    if (queryText.trim().length > 0) {
+      handleSendQuery(queryText.trim());
+      return;
+    }
+
     if (Platform.OS === 'web' && typeof window !== 'undefined') {
       const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
       if (!SpeechRecognition) {
@@ -185,7 +211,6 @@ export default function VoiceAssistantScreen({ navigation }) {
         const recognition = new SpeechRecognition();
         recognition.continuous = false;
         recognition.interimResults = true;
-        // Use Indian English for native recognition of Indian dishes & accents
         recognition.lang = 'en-IN';
 
         let capturedTranscript = '';
@@ -244,11 +269,18 @@ export default function VoiceAssistantScreen({ navigation }) {
         setIsListening(false);
       }
     } else {
-      Alert.alert('Voice Input', 'Please use your keyboard voice dictation or type your message in the text box below.');
+      // Mobile iOS/Android: Focus input so iOS keyboard opens with dictation mic ready!
+      inputRef.current?.focus();
     }
   };
 
   const toggleListening = () => {
+    // If text was dictated/typed into the box, tapping mic immediately sends and logs it!
+    if (queryText.trim().length > 0) {
+      handleSendQuery(queryText.trim());
+      return;
+    }
+
     if (isListening) {
       stopListening();
     } else {
@@ -574,6 +606,7 @@ export default function VoiceAssistantScreen({ navigation }) {
       {/* Input Bar */}
       <View style={styles.inputContainer}>
         <TextInput
+          ref={inputRef}
           style={styles.textInput}
           placeholder="Ask NutriVoice or dictate a meal..."
           value={queryText}
