@@ -15,6 +15,7 @@ import {
 import { Card, Button, Avatar, Chip, IconButton } from 'react-native-paper';
 import { MaterialCommunityIcons as Icon } from '@expo/vector-icons';
 import * as Speech from 'expo-speech';
+import { Audio } from 'expo-av';
 import { ChildContext } from '../context/ChildContext';
 import apiClient, { formatApiError } from '../api/client';
 
@@ -36,6 +37,8 @@ export default function VoiceAssistantScreen({ navigation }) {
   const barAnim3 = useRef(new Animated.Value(0.5)).current;
   const barAnim4 = useRef(new Animated.Value(0.9)).current;
   const recognitionRef = useRef(null);
+  const recordingRef = useRef(null);
+  const autoStopTimerRef = useRef(null);
 
   // Initial welcome message
   useEffect(() => {
@@ -97,9 +100,17 @@ export default function VoiceAssistantScreen({ navigation }) {
     return () => loop && loop.stop();
   }, [isListening, isSpeaking, loading]);
 
-  // Cleanup recognition on unmount
+  // Cleanup recognition and audio recording on unmount
   useEffect(() => {
     return () => {
+      if (autoStopTimerRef.current) {
+        clearTimeout(autoStopTimerRef.current);
+      }
+      if (recordingRef.current) {
+        try {
+          recordingRef.current.stopAndUnloadAsync();
+        } catch (e) {}
+      }
       if (recognitionRef.current) {
         try {
           recognitionRef.current.abort();
@@ -107,13 +118,23 @@ export default function VoiceAssistantScreen({ navigation }) {
       }
       if (Platform.OS === 'web' && typeof window !== 'undefined' && window.speechSynthesis) {
         window.speechSynthesis.cancel();
+      } else {
+        Speech.stop();
       }
     };
   }, []);
 
-  const speakText = (text) => {
-    if (!speechEnabled) return;
-    const cleanText = text.replace(/[*#_]/g, '');
+  const speakText = async (text) => {
+    if (!speechEnabled || !text) return;
+    const cleanText = text.replace(/[*#_`]/g, '');
+
+    // Reset audio session category to playback so speech plays out loud from speaker on iOS
+    try {
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: false,
+        playsInSilentModeIOS: true,
+      });
+    } catch (e) {}
 
     if (Platform.OS === 'web' && typeof window !== 'undefined' && window.speechSynthesis) {
       try {
@@ -161,7 +182,171 @@ export default function VoiceAssistantScreen({ navigation }) {
     }
   };
 
-  const stopListening = () => {
+  // -------------------------------------------------------------
+  // Native Audio Recording via expo-av (iOS & Android)
+  // -------------------------------------------------------------
+  const startAudioRecording = async () => {
+    try {
+      // Request mic permission
+      const perm = await Audio.requestPermissionsAsync();
+      if (perm.status !== 'granted') {
+        Alert.alert(
+          'Microphone Permission Needed',
+          'Please allow microphone permission in your device settings so NutriVoice can hear your meal logs and nutrition questions.'
+        );
+        return;
+      }
+
+      // Configure iOS audio mode for recording
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: true,
+        playsInSilentModeIOS: true,
+      });
+
+      // Prepare 16kHz 16-bit linear PCM WAV recording
+      const newRecording = new Audio.Recording();
+      await newRecording.prepareToRecordAsync({
+        android: {
+          extension: '.m4a',
+          outputFormat: Audio.AndroidOutputFormat.MPEG_4,
+          audioEncoder: Audio.AndroidAudioEncoder.AAC,
+          sampleRate: 44100,
+          numberOfChannels: 1,
+          bitRate: 128000,
+        },
+        ios: {
+          extension: '.wav',
+          outputFormat: Audio.IOSOutputFormat.LINEARPCM,
+          audioQuality: Audio.IOSAudioQuality.HIGH,
+          sampleRate: 16000,
+          numberOfChannels: 1,
+          bitRate: 256000,
+          linearPCMBitDepth: 16,
+          linearPCMIsBigEndian: false,
+          linearPCMIsFloat: false,
+        },
+        web: {
+          mimeType: 'audio/webm',
+          bitsPerSecond: 128000,
+        },
+      });
+
+      await newRecording.startAsync();
+      recordingRef.current = newRecording;
+      setIsListening(true);
+
+      // Auto-stop recording after 10 seconds if user forgets to tap stop
+      if (autoStopTimerRef.current) clearTimeout(autoStopTimerRef.current);
+      autoStopTimerRef.current = setTimeout(() => {
+        if (recordingRef.current) {
+          stopAudioRecording();
+        }
+      }, 10000);
+    } catch (err) {
+      console.error('[VoiceAssistant] Start recording error:', err);
+      Alert.alert('Microphone Error', 'Could not start audio recording: ' + (err.message || 'Unknown error'));
+      setIsListening(false);
+    }
+  };
+
+  const stopAudioRecording = async () => {
+    if (autoStopTimerRef.current) {
+      clearTimeout(autoStopTimerRef.current);
+      autoStopTimerRef.current = null;
+    }
+
+    const rec = recordingRef.current;
+    recordingRef.current = null;
+    setIsListening(false);
+
+    if (!rec) return;
+
+    setLoading(true);
+
+    try {
+      await rec.stopAndUnloadAsync();
+      const uri = rec.getURI();
+      console.log('[VoiceAssistant] Recorded voice file URI:', uri);
+
+      // Re-enable playback audio mode so speaker output is loud and clear
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: false,
+        playsInSilentModeIOS: true,
+      });
+
+      if (!uri) {
+        setLoading(false);
+        return;
+      }
+
+      // Create multipart FormData for voice query
+      const formData = new FormData();
+      const filename = uri.split('/').pop() || 'voice.wav';
+      const fileType = filename.endsWith('.m4a') ? 'audio/m4a' : 'audio/wav';
+
+      formData.append('audio', {
+        uri: Platform.OS === 'ios' ? uri.replace('file://', '') : uri,
+        name: filename,
+        type: fileType,
+      });
+
+      if (activeChild?.child_id) {
+        formData.append('child_id', String(activeChild.child_id));
+      }
+
+      const response = await apiClient.post('/voice/audio-query', formData, {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+        },
+        timeout: 30000,
+      });
+
+      const data = response.data;
+
+      // Add user message to chat stream
+      if (data.transcribed_text && !data.transcribed_text.includes('(No speech detected)')) {
+        const userMsg = {
+          id: Date.now().toString(),
+          sender: 'user',
+          text: data.transcribed_text,
+        };
+        setMessages((prev) => [...prev, userMsg]);
+      }
+
+      // Add AI response to chat stream
+      const aiMsg = {
+        id: (Date.now() + 1).toString(),
+        sender: 'ai',
+        text: data.response_text,
+        speechText: data.speech_text,
+        actionType: data.action_type,
+        actionData: data.action_data,
+        suggestions: data.suggestions || [],
+      };
+      setMessages((prev) => [...prev, aiMsg]);
+
+      // Speak response back to user
+      speakText(data.speech_text || data.response_text);
+    } catch (err) {
+      console.error('[VoiceAssistant] Voice query upload error:', err);
+      const errorMsg = {
+        id: (Date.now() + 1).toString(),
+        sender: 'ai',
+        text: `Sorry, I had trouble processing your voice message. (${formatApiError(err)})`,
+        speechText: 'Sorry, I had trouble processing your voice message.',
+        actionType: 'GENERAL_AI',
+      };
+      setMessages((prev) => [...prev, errorMsg]);
+    } finally {
+      setLoading(false);
+      setTimeout(() => scrollViewRef.current?.scrollToEnd({ animated: true }), 100);
+    }
+  };
+
+  // -------------------------------------------------------------
+  // Web Speech Recognition Fallback (Chrome / Edge on Desktop)
+  // -------------------------------------------------------------
+  const stopWebListening = () => {
     if (recognitionRef.current) {
       try {
         recognitionRef.current.abort();
@@ -171,120 +356,65 @@ export default function VoiceAssistantScreen({ navigation }) {
     setIsListening(false);
   };
 
-  const startListening = async () => {
-    // If the input already has text (e.g. from keyboard voice dictation), send it immediately!
-    if (queryText.trim().length > 0) {
-      handleSendQuery(queryText.trim());
+  const startWebListening = async () => {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      Alert.alert(
+        'Microphone Not Supported',
+        'Your web browser does not support Speech Recognition. Please use Google Chrome or type your message below.'
+      );
       return;
     }
 
-    if (Platform.OS === 'web' && typeof window !== 'undefined') {
-      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-      if (!SpeechRecognition) {
-        Alert.alert(
-          'Microphone Not Supported',
-          'Your current web browser does not support Web Speech Recognition. Please use Google Chrome or Microsoft Edge, or type your query in the text box below.'
-        );
-        return;
-      }
+    try {
+      const recognition = new SpeechRecognition();
+      recognition.continuous = false;
+      recognition.interimResults = true;
+      recognition.lang = 'en-IN';
 
-      // Explicitly prompt/verify microphone access
-      try {
-        if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-          stream.getTracks().forEach((track) => track.stop());
+      let captured = '';
+
+      recognition.onstart = () => setIsListening(true);
+      recognition.onresult = (e) => {
+        let interim = '';
+        for (let i = e.resultIndex; i < e.results.length; ++i) {
+          if (e.results[i].isFinal) captured += e.results[i][0].transcript;
+          else interim += e.results[i][0].transcript;
         }
-      } catch (permErr) {
-        console.warn('Microphone permission check error:', permErr);
-        Alert.alert(
-          'Microphone Access Needed',
-          'Please allow microphone access in your browser settings (look for the microphone icon in your address bar) so NutriVoice can hear you.'
-        );
+        if (captured || interim) setQueryText(captured || interim);
+      };
+      recognition.onerror = () => setIsListening(false);
+      recognition.onend = () => {
         setIsListening(false);
-        return;
-      }
+        recognitionRef.current = null;
+        if (captured.trim()) handleSendQuery(captured.trim());
+      };
 
-      // Stop previous instance if any
-      stopListening();
-
-      try {
-        const recognition = new SpeechRecognition();
-        recognition.continuous = false;
-        recognition.interimResults = true;
-        recognition.lang = 'en-IN';
-
-        let capturedTranscript = '';
-
-        recognition.onstart = () => {
-          setIsListening(true);
-        };
-
-        recognition.onresult = (event) => {
-          let interimTranscript = '';
-          for (let i = event.resultIndex; i < event.results.length; ++i) {
-            if (event.results[i].isFinal) {
-              capturedTranscript += event.results[i][0].transcript;
-            } else {
-              interimTranscript += event.results[i][0].transcript;
-            }
-          }
-          const liveText = capturedTranscript || interimTranscript;
-          if (liveText) {
-            setQueryText(liveText);
-          }
-        };
-
-        recognition.onerror = (event) => {
-          console.warn('SpeechRecognition error:', event.error);
-          setIsListening(false);
-          recognitionRef.current = null;
-          if (event.error === 'not-allowed') {
-            Alert.alert(
-              'Microphone Permission Denied',
-              'Microphone access was denied. Please click the microphone/lock icon in your browser address bar to allow microphone access, or type your message below.'
-            );
-          } else if (event.error === 'no-speech') {
-            Alert.alert(
-              'No Speech Detected',
-              "We didn't hear anything. Please try speaking closer to your mic or type your prompt."
-            );
-          } else if (event.error !== 'aborted') {
-            Alert.alert('Voice Recognition', `Voice error (${event.error}). You can also type your message.`);
-          }
-        };
-
-        recognition.onend = () => {
-          setIsListening(false);
-          recognitionRef.current = null;
-          const query = capturedTranscript.trim() || queryText.trim();
-          if (query) {
-            handleSendQuery(query);
-          }
-        };
-
-        recognitionRef.current = recognition;
-        recognition.start();
-      } catch (err) {
-        console.error('Failed to start speech recognition:', err);
-        setIsListening(false);
-      }
-    } else {
-      // Mobile iOS/Android: Focus input so iOS keyboard opens with dictation mic ready!
-      inputRef.current?.focus();
+      recognitionRef.current = recognition;
+      recognition.start();
+    } catch (err) {
+      console.error('Web speech start error:', err);
+      setIsListening(false);
     }
   };
 
   const toggleListening = () => {
-    // If text was dictated/typed into the box, tapping mic immediately sends and logs it!
+    // If text is already typed/dictated in input, tapping sends it immediately
     if (queryText.trim().length > 0) {
       handleSendQuery(queryText.trim());
       return;
     }
 
-    if (isListening) {
-      stopListening();
+    if (Platform.OS === 'web') {
+      if (isListening) stopWebListening();
+      else startWebListening();
     } else {
-      startListening();
+      // Native iOS & Android
+      if (isListening || recordingRef.current) {
+        stopAudioRecording();
+      } else {
+        startAudioRecording();
+      }
     }
   };
 
@@ -385,10 +515,17 @@ export default function VoiceAssistantScreen({ navigation }) {
     <View style={styles.container}>
       {/* Visualizer Header */}
       <View style={styles.visualizerHeader}>
-        <Animated.View style={[styles.micPulseCircle, { transform: [{ scale: pulseAnim }] }]}>
-          <TouchableOpacity onPress={toggleListening} style={styles.micButtonCircle}>
+        <Animated.View style={[
+          styles.micPulseCircle,
+          { transform: [{ scale: pulseAnim }] },
+          isListening && styles.micPulseCircleRecording,
+        ]}>
+          <TouchableOpacity
+            onPress={toggleListening}
+            style={[styles.micButtonCircle, isListening && styles.micButtonCircleRecording]}
+          >
             <Icon
-              name={isListening ? 'microphone' : isSpeaking ? 'volume-high' : 'microphone-outline'}
+              name={isListening ? 'stop' : isSpeaking ? 'volume-high' : 'microphone'}
               size={36}
               color="#FFF"
             />
@@ -397,14 +534,20 @@ export default function VoiceAssistantScreen({ navigation }) {
 
         {/* Dynamic Soundwaves */}
         <View style={styles.soundwaveContainer}>
-          <Animated.View style={[styles.soundwaveBar, { transform: [{ scaleY: barAnim1 }] }]} />
-          <Animated.View style={[styles.soundwaveBar, { transform: [{ scaleY: barAnim2 }] }]} />
-          <Animated.View style={[styles.soundwaveBar, { transform: [{ scaleY: barAnim3 }] }]} />
-          <Animated.View style={[styles.soundwaveBar, { transform: [{ scaleY: barAnim4 }] }]} />
+          <Animated.View style={[styles.soundwaveBar, { transform: [{ scaleY: barAnim1 }] }, isListening && styles.soundwaveBarRecording]} />
+          <Animated.View style={[styles.soundwaveBar, { transform: [{ scaleY: barAnim2 }] }, isListening && styles.soundwaveBarRecording]} />
+          <Animated.View style={[styles.soundwaveBar, { transform: [{ scaleY: barAnim3 }] }, isListening && styles.soundwaveBarRecording]} />
+          <Animated.View style={[styles.soundwaveBar, { transform: [{ scaleY: barAnim4 }] }, isListening && styles.soundwaveBarRecording]} />
         </View>
 
-        <Text style={styles.statusText}>
-          {isListening ? '🎙️ Listening to your voice...' : loading ? '🧠 NutriVoice Thinking...' : isSpeaking ? '🔊 Speaking response...' : 'Tap Mic or Type to Talk'}
+        <Text style={[styles.statusText, isListening && { color: '#D32F2F', fontWeight: 'bold' }]}>
+          {isListening
+            ? '🔴 Recording voice... Tap Mic to Send!'
+            : loading
+            ? '🧠 Transcribing & Processing...'
+            : isSpeaking
+            ? '🔊 Speaking response...'
+            : 'Tap Mic to Speak or Type below'}
         </Text>
 
         <TouchableOpacity style={styles.ttsToggle} onPress={() => setSpeechEnabled(!speechEnabled)}>
@@ -617,7 +760,7 @@ export default function VoiceAssistantScreen({ navigation }) {
           onPress={toggleListening}
           style={[styles.micIconButton, isListening && { backgroundColor: '#D32F2F' }]}
         >
-          <Icon name={isListening ? 'microphone-off' : 'microphone'} size={24} color="#FFF" />
+          <Icon name={isListening ? 'stop' : 'microphone'} size={24} color="#FFF" />
         </TouchableOpacity>
         <TouchableOpacity onPress={() => handleSendQuery()} style={styles.sendButton}>
           <Icon name="send" size={20} color="#FFF" />
@@ -645,6 +788,9 @@ const styles = StyleSheet.create({
     padding: 6,
     backgroundColor: 'rgba(46, 125, 50, 0.15)',
   },
+  micPulseCircleRecording: {
+    backgroundColor: 'rgba(211, 47, 47, 0.22)',
+  },
   micButtonCircle: {
     width: 68,
     height: 68,
@@ -653,6 +799,9 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     elevation: 4,
+  },
+  micButtonCircleRecording: {
+    backgroundColor: '#D32F2F',
   },
   soundwaveContainer: {
     flexDirection: 'row',
@@ -666,6 +815,9 @@ const styles = StyleSheet.create({
     backgroundColor: '#2E7D32',
     marginHorizontal: 3,
     borderRadius: 2,
+  },
+  soundwaveBarRecording: {
+    backgroundColor: '#D32F2F',
   },
   statusText: {
     fontSize: 14,

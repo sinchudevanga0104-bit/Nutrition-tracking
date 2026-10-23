@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form
 from sqlalchemy.orm import Session
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel
@@ -6,6 +6,14 @@ from datetime import date, datetime
 from decimal import Decimal
 import re
 import difflib
+import io
+import wave
+import os
+import certifi
+import av
+import speech_recognition as sr
+
+os.environ["SSL_CERT_FILE"] = certifi.where()
 
 from app.database.connection import get_db
 from app.models.user import User
@@ -28,6 +36,42 @@ class VoiceAssistantResponse(BaseModel):
     action_type: str # "LOG_MEAL", "WATER_TRACK", "NAVIGATE", "GROWTH_LOGGED", "GROWTH_INFO", "RECOMMENDATION", "GENERAL_AI"
     action_data: Optional[Dict[str, Any]] = None
     suggestions: List[str] = []
+
+class VoiceAudioResponse(BaseModel):
+    transcribed_text: str
+    response_text: str
+    speech_text: str
+    action_type: str
+    action_data: Optional[Dict[str, Any]] = None
+    suggestions: List[str] = []
+
+def audio_to_pcm_wav(input_bytes: bytes) -> io.BytesIO:
+    """Convert any audio file format (WAV, M4A, AAC, WebM, MP3, CAF) to 16kHz mono 16-bit PCM WAV for Google Speech Recognition."""
+    try:
+        with wave.open(io.BytesIO(input_bytes), 'rb') as w:
+            if w.getnchannels() in (1, 2) and w.getsampwidth() in (1, 2, 4):
+                return io.BytesIO(input_bytes)
+    except Exception:
+        pass
+
+    try:
+        in_container = av.open(io.BytesIO(input_bytes))
+        out_buf = io.BytesIO()
+        out_wav = wave.open(out_buf, 'wb')
+        out_wav.setnchannels(1)
+        out_wav.setsampwidth(2)
+        out_wav.setframerate(16000)
+
+        resampler = av.AudioResampler(format='s16', layout='mono', rate=16000)
+        for frame in in_container.decode(audio=0):
+            for resampled_frame in resampler.resample(frame):
+                out_wav.writeframes(resampled_frame.to_ndarray().tobytes())
+
+        out_wav.close()
+        out_buf.seek(0)
+        return out_buf
+    except Exception as e:
+        raise ValueError(f"Could not decode audio: {str(e)}")
 
 # Word to number mapping
 WORD_TO_NUM = {
@@ -589,3 +633,92 @@ def process_voice_query(
             "Check today's nutrition intake"
         ]
     )
+
+@router.post("/audio-query", response_model=VoiceAudioResponse)
+async def process_audio_query(
+    audio: UploadFile = File(...),
+    child_id: Optional[int] = Form(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Receives recorded voice audio from the mobile app (iOS/Android/Web),
+    transcribes speech using Google Speech Recognition, and processes the
+    nutrition query/meal log/water log via NutriVoice AI.
+    """
+    try:
+        audio_bytes = await audio.read()
+    except Exception as read_err:
+        raise HTTPException(status_code=400, detail=f"Failed to read audio file: {read_err}")
+
+    if not audio_bytes or len(audio_bytes) < 100:
+        return VoiceAudioResponse(
+            transcribed_text="",
+            response_text="⚠️ **No audio received.**\n\nPlease hold the microphone and speak your query.",
+            speech_text="No audio was received. Please try again.",
+            action_type="GENERAL_AI",
+            suggestions=["Add one idli", "Log 1 glass of water", "Open Water Tracker"]
+        )
+
+    try:
+        wav_stream = audio_to_pcm_wav(audio_bytes)
+        r = sr.Recognizer()
+        with sr.AudioFile(wav_stream) as source:
+            audio_data = r.record(source)
+
+        transcribed = None
+        # Try Indian English first, then fallback to standard English
+        try:
+            try:
+                transcribed = r.recognize_google(audio_data, language="en-IN")
+            except sr.UnknownValueError:
+                try:
+                    transcribed = r.recognize_google(audio_data, language="en-US")
+                except sr.UnknownValueError:
+                    pass
+        except sr.RequestError as req_err:
+            return VoiceAudioResponse(
+                transcribed_text="(Recognition service unavailable)",
+                response_text=f"⚠️ Voice recognition service is temporarily unavailable: {req_err}. Please type your query below.",
+                speech_text="Voice recognition service is temporarily unavailable. Please type your query.",
+                action_type="GENERAL_AI",
+                suggestions=["Add one dosa", "Log 1 glass of water"]
+            )
+
+        if not transcribed:
+            return VoiceAudioResponse(
+                transcribed_text="(No speech detected)",
+                response_text=(
+                    "🎙️ **I couldn't hear any speech clearly.**\n\n"
+                    "Please tap the mic and try speaking closer to your phone. You can say:\n"
+                    "• *\"Add 2 idlis for breakfast\"*\n"
+                    "• *\"Add 1 glass of water\"*\n"
+                    "• *\"What did my child eat today?\"*\n"
+                    "• *\"Open Growth Tracker\"*"
+                ),
+                speech_text="I couldn't hear any speech clearly. Please tap the mic and try speaking closer to your phone.",
+                action_type="GENERAL_AI",
+                suggestions=["Add 2 idlis for breakfast", "Log 1 glass of water", "Open Nutrition"]
+            )
+
+        # Feed the transcribed text to NutriVoice query processor
+        query_payload = VoiceQueryRequest(query=transcribed, child_id=child_id)
+        result = process_voice_query(payload=query_payload, db=db, current_user=current_user)
+
+        return VoiceAudioResponse(
+            transcribed_text=transcribed,
+            response_text=result.response_text,
+            speech_text=result.speech_text,
+            action_type=result.action_type,
+            action_data=result.action_data,
+            suggestions=result.suggestions
+        )
+    except Exception as e:
+        return VoiceAudioResponse(
+            transcribed_text="",
+            response_text=f"⚠️ Error processing audio: {str(e)}",
+            speech_text="Sorry, an error occurred while processing your voice audio.",
+            action_type="GENERAL_AI",
+            suggestions=["Add one idli", "Log 1 glass of water"]
+        )
+

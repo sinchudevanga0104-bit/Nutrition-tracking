@@ -9,9 +9,15 @@
       "**/*"
     ],
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSMicrophoneUsageDescription": "NutriTrack AI needs microphone access to record your voice messages for logging meals and asking nutrition questions."
+      }
     },
     "android": {},
-    "web": {}
+    "web": {},
+    "plugins": [
+      "expo-status-bar"
+    ]
   }
 }
