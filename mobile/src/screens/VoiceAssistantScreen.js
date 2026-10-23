@@ -13,7 +13,7 @@ import {
   Platform,
 } from 'react-native';
 import { Card, Button, Avatar, Chip, IconButton } from 'react-native-paper';
-import Icon from '@expo/vector-icons/MaterialCommunityIcons';
+import { MaterialCommunityIcons as Icon } from '@expo/vector-icons';
 import { ChildContext } from '../context/ChildContext';
 import apiClient, { formatApiError } from '../api/client';
 

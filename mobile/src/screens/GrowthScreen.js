@@ -2,7 +2,7 @@ import React, { useState, useEffect, useContext } from 'react';
 import { View, StyleSheet, Text, ScrollView, ActivityIndicator, Dimensions } from 'react-native';
 import { Card, Button, TextInput, HelperText, DataTable, Chip, Divider } from 'react-native-paper';
 import { LineChart } from 'react-native-chart-kit';
-import Icon from '@expo/vector-icons/MaterialCommunityIcons';
+import { MaterialCommunityIcons as Icon } from '@expo/vector-icons';
 import { ChildContext } from '../context/ChildContext';
 import apiClient, { formatApiError } from '../api/client';
 

@@ -3,7 +3,7 @@ import { View, StyleSheet, Text, ScrollView, TouchableOpacity, ActivityIndicator
 import { Card, Button, ProgressBar } from 'react-native-paper';
 import { ChildContext } from '../context/ChildContext';
 import apiClient from '../api/client';
-import Icon from '@expo/vector-icons/MaterialCommunityIcons';
+import { MaterialCommunityIcons as Icon } from '@expo/vector-icons';
 
 // Helper to format date reliably in local timezone (YYYY-MM-DD)
 const getLocalDateString = (d = new Date()) => {

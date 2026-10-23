@@ -5,7 +5,7 @@ import { Platform } from 'react-native';
 
 // Public tunnel URL for backend when running Expo on phone / hotspot
 const TUNNEL_URL = 'https://freely-river-orlando-amplifier.trycloudflare.com';
-const CURRENT_LAN_URL = 'http://192.0.0.2:8000';
+const CURRENT_LAN_URL = 'http://10.27.40.156:8000';
 
 const getCandidateUrls = () => {
   const list = [];

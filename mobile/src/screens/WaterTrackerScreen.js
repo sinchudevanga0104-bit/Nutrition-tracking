@@ -11,7 +11,7 @@ import {
   Alert,
 } from 'react-native';
 import { Card, Button, ProgressBar, Switch, TextInput, Dialog, Portal, Chip, Avatar } from 'react-native-paper';
-import Icon from '@expo/vector-icons/MaterialCommunityIcons';
+import { MaterialCommunityIcons as Icon } from '@expo/vector-icons';
 import { ChildContext } from '../context/ChildContext';
 import apiClient, { formatApiError } from '../api/client';
 

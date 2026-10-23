@@ -12,7 +12,7 @@ import {
   Alert
 } from 'react-native';
 import { Card, Button, Portal, Dialog, Chip } from 'react-native-paper';
-import Icon from '@expo/vector-icons/MaterialCommunityIcons';
+import { MaterialCommunityIcons as Icon } from '@expo/vector-icons';
 import apiClient from '../api/client';
 
 const DEMO_BARCODES = [
