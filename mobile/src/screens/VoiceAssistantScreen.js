@@ -15,9 +15,16 @@ import {
 import { Card, Button, Avatar, Chip, IconButton } from 'react-native-paper';
 import { MaterialCommunityIcons as Icon } from '@expo/vector-icons';
 import * as Speech from 'expo-speech';
-import { Audio } from 'expo-av';
 import { ChildContext } from '../context/ChildContext';
 import apiClient, { formatApiError } from '../api/client';
+
+// Safely require expo-audio so runtime never crashes if native module is absent
+let ExpoAudio = null;
+try {
+  ExpoAudio = require('expo-audio');
+} catch (e) {
+  console.log('[VoiceAssistant] expo-audio not loaded:', e.message);
+}
 
 export default function VoiceAssistantScreen({ navigation }) {
   const { activeChild } = useContext(ChildContext);
@@ -108,7 +115,9 @@ export default function VoiceAssistantScreen({ navigation }) {
       }
       if (recordingRef.current) {
         try {
-          recordingRef.current.stopAndUnloadAsync();
+          if (typeof recordingRef.current.stop === 'function') {
+            recordingRef.current.stop();
+          }
         } catch (e) {}
       }
       if (recognitionRef.current) {
@@ -129,12 +138,14 @@ export default function VoiceAssistantScreen({ navigation }) {
     const cleanText = text.replace(/[*#_`]/g, '');
 
     // Reset audio session category to playback so speech plays out loud from speaker on iOS
-    try {
-      await Audio.setAudioModeAsync({
-        allowsRecordingIOS: false,
-        playsInSilentModeIOS: true,
-      });
-    } catch (e) {}
+    if (ExpoAudio && typeof ExpoAudio.setAudioModeAsync === 'function') {
+      try {
+        await ExpoAudio.setAudioModeAsync({
+          allowsRecording: false,
+          playsInSilentMode: true,
+        });
+      } catch (e) {}
+    }
 
     if (Platform.OS === 'web' && typeof window !== 'undefined' && window.speechSynthesis) {
       try {
@@ -183,69 +194,62 @@ export default function VoiceAssistantScreen({ navigation }) {
   };
 
   // -------------------------------------------------------------
-  // Native Audio Recording via expo-av (iOS & Android)
+  // Native Audio Recording via expo-audio (Expo SDK 55+)
   // -------------------------------------------------------------
   const startAudioRecording = async () => {
     try {
-      // Request mic permission
-      const perm = await Audio.requestPermissionsAsync();
-      if (perm.status !== 'granted') {
-        Alert.alert(
-          'Microphone Permission Needed',
-          'Please allow microphone permission in your device settings so NutriVoice can hear your meal logs and nutrition questions.'
-        );
-        return;
-      }
+      const hasAudioRecorder = ExpoAudio && ExpoAudio.AudioModule && typeof ExpoAudio.AudioModule.AudioRecorder === 'function';
 
-      // Configure iOS audio mode for recording
-      await Audio.setAudioModeAsync({
-        allowsRecordingIOS: true,
-        playsInSilentModeIOS: true,
-      });
-
-      // Prepare 16kHz 16-bit linear PCM WAV recording
-      const newRecording = new Audio.Recording();
-      await newRecording.prepareToRecordAsync({
-        android: {
-          extension: '.m4a',
-          outputFormat: Audio.AndroidOutputFormat.MPEG_4,
-          audioEncoder: Audio.AndroidAudioEncoder.AAC,
-          sampleRate: 44100,
-          numberOfChannels: 1,
-          bitRate: 128000,
-        },
-        ios: {
-          extension: '.wav',
-          outputFormat: Audio.IOSOutputFormat.LINEARPCM,
-          audioQuality: Audio.IOSAudioQuality.HIGH,
-          sampleRate: 16000,
-          numberOfChannels: 1,
-          bitRate: 256000,
-          linearPCMBitDepth: 16,
-          linearPCMIsBigEndian: false,
-          linearPCMIsFloat: false,
-        },
-        web: {
-          mimeType: 'audio/webm',
-          bitsPerSecond: 128000,
-        },
-      });
-
-      await newRecording.startAsync();
-      recordingRef.current = newRecording;
-      setIsListening(true);
-
-      // Auto-stop recording after 10 seconds if user forgets to tap stop
-      if (autoStopTimerRef.current) clearTimeout(autoStopTimerRef.current);
-      autoStopTimerRef.current = setTimeout(() => {
-        if (recordingRef.current) {
-          stopAudioRecording();
+      if (hasAudioRecorder) {
+        // Request mic permission
+        if (typeof ExpoAudio.requestRecordingPermissionsAsync === 'function') {
+          const perm = await ExpoAudio.requestRecordingPermissionsAsync();
+          if (!perm.granted) {
+            Alert.alert(
+              'Microphone Permission Needed',
+              'Please allow microphone permission so NutriVoice can hear your meal logs.'
+            );
+            return;
+          }
         }
-      }, 10000);
+
+        if (typeof ExpoAudio.setAudioModeAsync === 'function') {
+          await ExpoAudio.setAudioModeAsync({
+            allowsRecording: true,
+            playsInSilentMode: true,
+          });
+        }
+
+        const options = ExpoAudio.RecordingPresets?.HIGH_QUALITY || {};
+        const newRecording = new ExpoAudio.AudioModule.AudioRecorder(options);
+        if (typeof newRecording.prepareToRecordAsync === 'function') {
+          await newRecording.prepareToRecordAsync();
+        }
+        newRecording.record();
+        recordingRef.current = newRecording;
+        setIsListening(true);
+
+        // Auto-stop recording after 10 seconds if user forgets to tap stop
+        if (autoStopTimerRef.current) clearTimeout(autoStopTimerRef.current);
+        autoStopTimerRef.current = setTimeout(() => {
+          stopAudioRecording();
+        }, 10000);
+      } else {
+        // Fallback for environments without native audio recorder
+        Alert.alert(
+          '🎙️ Dictate Meal by Voice',
+          'Tap the microphone icon on your keyboard (next to the spacebar) to dictate your meal or question, then tap Send!'
+        );
+        inputRef.current?.focus();
+      }
     } catch (err) {
       console.error('[VoiceAssistant] Start recording error:', err);
-      Alert.alert('Microphone Error', 'Could not start audio recording: ' + (err.message || 'Unknown error'));
+      Alert.alert(
+        '🎙️ Dictate Meal by Voice',
+        'Tap the microphone icon on your keyboard (next to the spacebar) to speak your meal, then tap Send!'
+      );
       setIsListening(false);
+      inputRef.current?.focus();
     }
   };
 
@@ -264,15 +268,21 @@ export default function VoiceAssistantScreen({ navigation }) {
     setLoading(true);
 
     try {
-      await rec.stopAndUnloadAsync();
-      const uri = rec.getURI();
+      if (typeof rec.stop === 'function') {
+        await rec.stop();
+      }
+      const uri = rec.uri;
       console.log('[VoiceAssistant] Recorded voice file URI:', uri);
 
       // Re-enable playback audio mode so speaker output is loud and clear
-      await Audio.setAudioModeAsync({
-        allowsRecordingIOS: false,
-        playsInSilentModeIOS: true,
-      });
+      if (ExpoAudio && typeof ExpoAudio.setAudioModeAsync === 'function') {
+        try {
+          await ExpoAudio.setAudioModeAsync({
+            allowsRecording: false,
+            playsInSilentMode: true,
+          });
+        } catch (e) {}
+      }
 
       if (!uri) {
         setLoading(false);
